@@ -1,0 +1,81 @@
+CREATE OR REPLACE EXTERNAL TABLE `ingka-ime-campman-test.wunderman.tbl_KPI_list_External` (
+  KPI_Metric STRING,
+  KPI_Sheet_Name STRING,
+  Channel STRING,
+  Category STRING,
+  Definition STRING,
+  Usage_Guidance STRING,
+  Business_Rules STRING,
+  Calculation STRING,
+)
+OPTIONS (
+  format = 'GOOGLE_SHEETS',
+  uris = ['https://docs.google.com/spreadsheets/d/1RGGG_30eed1PYCE1ElPKOs_l85PQIdxsezZ8jwmjrS4'],
+  sheet_range = 'KPI List'  
+);
+
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_KPI_list`
+AS
+(SELECT *
+FROM `ingka-ime-campman-test.wunderman.tbl_KPI_list_External`
+order by 1);
+
+
+
+---------------------------****************************************************************************--------------------------------------------------
+
+
+CREATE OR REPLACE EXTERNAL TABLE `ingka-ime-campman-test.wunderman.tbl_dashboard_description_External` (
+  Name STRING,
+  Tab STRING,
+  Category STRING,
+  Description STRING
+)
+OPTIONS (
+  format = 'GOOGLE_SHEETS',
+  uris = ['https://docs.google.com/spreadsheets/d/1RGGG_30eed1PYCE1ElPKOs_l85PQIdxsezZ8jwmjrS4'],
+  sheet_range = 'Dashboard Description'  
+);
+
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.dashboard_description`
+AS
+(SELECT *
+FROM `ingka-ime-campman-test.wunderman.tbl_dashboard_description_External`
+Order by 1);
+
+
+
+---------------------------****************************************************************************--------------------------------------------------
+
+
+CREATE OR REPLACE EXTERNAL TABLE `ingka-ime-campman-test.wunderman.tbl_Dashboard_and_KPI_List_External` (
+  Name STRING,
+  Tab STRING,
+  KPI1 STRING,
+  KPI2 STRING,
+  KPI3 STRING,
+  KPI4 STRING,
+  KPI5 STRING,
+  KPI6 STRING,
+  KPI7 STRING,
+  KPI8 STRING,
+  KPI9 STRING,
+  KPI10 STRING,
+  KPI11 STRING
+)
+OPTIONS (
+  format = 'GOOGLE_SHEETS',
+  uris = ['https://docs.google.com/spreadsheets/d/1RGGG_30eed1PYCE1ElPKOs_l85PQIdxsezZ8jwmjrS4'],
+  sheet_range = 'Dashboard and KPI List'  
+);
+
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.dashboard_and_KPI_list`
+AS
+(SELECT *
+FROM `ingka-ime-campman-test.wunderman.tbl_Dashboard_and_KPI_List_External`
+Order by 1);
+
+
