@@ -1,0 +1,36 @@
+LOAD DATA INTO `ingka-ime-campman-test.wunderman.journey_data_fetch`
+FROM FILES (
+  format = 'CSV',
+  uris = ['gs://campman-test-wunderman/shared_journey_schedules.csv']
+)
+;
+
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.journey_data` AS
+SELECT 
+    JOURNEY_NAME, 
+    JOURNEY_VERSION, 
+    JOURNEY_STATUS, 
+    JOURNEY_TRIGGER_TYPE, 
+    JOURNEY_TRIGGER_DESCRIPTION, 
+    SAFE.PARSE_DATETIME('%Y-%m-%dT%H:%M:%S', JOURNEY_START_DATETIME) AS JOURNEY_START_DATETIME,
+    SAFE.PARSE_DATETIME('%Y-%m-%d %H:%M:%S', CAST(JOURNEY_END_DATETIME AS STRING)) AS JOURNEY_END_DATETIME, 
+    JOURNEY_TIMEZONE, 
+    JOURNEY_OCCURRENCES, 
+    JOURNEY_END_TYPE, 
+    JOURNEY_FREQUENCY, 
+    JOURNEY_RECURRENCE_PATTERN, 
+    JOURNEY_INTERVAL, 
+    LastUpdated, 
+    CASE 
+        WHEN LENGTH(RETAIL_UNIT) <= 3 THEN RETAIL_UNIT 
+        ELSE NULL 
+    END AS RETAIL_UNIT, 
+    SAFE.PARSE_DATETIME('%b %d %Y %I:%M%p', JOURNEY_START_DATETIME_UTC) AS JOURNEY_START_DATETIME_UTC, 
+    JOURNEY_START_TIME_UTC,
+    string_field_17
+FROM 
+    `ingka-ime-campman-test.wunderman.journey_data_fetch`
+;
+
+
