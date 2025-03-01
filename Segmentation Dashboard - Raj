@@ -1,0 +1,150 @@
+CREATE OR REPLACE EXTERNAL TABLE `ingka-ime-campman-test.wunderman.jira_data_parent` (
+  issue_type STRING,
+  status STRING,
+  key STRING,
+  created_at STRING,
+  updated_at STRING,
+  job_number STRING,
+  summary STRING,
+  dispatch_date_and_time STRING,
+  campaign_type STRING,
+  region_market STRING,
+  ab_test STRING,
+  segmentation STRING,
+  demographics STRING,
+  engagement STRING,
+  global_filter STRING,
+  predefined_filters STRING,
+  local_one_off_filter STRING,
+  local_one_off_filter_ii STRING,
+  exclusions STRING,
+  block_targetting_type STRING,
+  common_push_campaign STRING,
+  common_push_type STRING,
+  common_push_adaptation STRING,
+  adaptation STRING
+)
+OPTIONS (
+  format = 'CSV',
+  uris = ['gs://ingka-jira-campman-test-import/jira_issues/*.csv'],  --path will pick all the csv file and convert into one external table
+  skip_leading_rows = 1
+);
+
+----**********************************************************************************************************------------------------------------------------------------------
+--Removing duplicates 
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.Segmentation_table` 
+OPTIONS(expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(),INTERVAL 30 DAY)) AS
+SELECT DISTINCT issue_type ,
+  summary ,
+  campaign_type,
+  region_market,
+  ab_test,
+  segmentation,
+  demographics,
+  engagement,
+  global_filter,
+  predefined_filters,
+  local_one_off_filter,
+  local_one_off_filter_ii,
+  exclusions,
+  block_targetting_type,
+  common_push_campaign,
+  common_push_type,
+  common_push_adaptation
+FROM `ingka-ime-campman-test.wunderman.jira_data_parent`;
+
+
+
+
+----**********************************************************************************************************------------------------------------------------------------------
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.engagement_conv` 
+OPTIONS(expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 30 DAY))
+AS (
+WITH cte_interactions AS (
+    SELECT 
+      customer_bk,
+      send_category,
+      promotion_id,
+      retail_unit_code,
+      launch_id,
+      customer_type,
+      customer_category,
+      send_utc_date,
+      SUM(total_sends) AS total_sends,
+      SUM(total_bounces) AS total_bounces,
+      SUM(unique_opens) AS unique_opens,
+      SUM(unique_clicks) AS unique_clicks,
+      SUM(unique_optouts) AS unique_optouts
+    FROM 
+      `ingka-ime-campman-test.wunderman.tbl_interaction_promotion_consolidated_at_send_date_flt_fct`
+    WHERE 
+      send_utc_date >= '2023-01-01' 
+    GROUP BY 1,2,3,4,5,6,7,8
+),
+
+cte_conversion AS (
+    SELECT 
+      customer_bk,
+      send_category,
+      promotion_id,
+      retail_unit_code,
+      launch_id,
+      customer_type,
+      customer_category,
+      EXTRACT(DATE FROM send_utc_dttm) AS send_utc_date,
+      COUNT(DISTINCT receipt_id) AS transactions,
+      COUNT(DISTINCT CONCAT(customer_bk, retail_unit_code, launch_id, send_utc_dttm)) AS conversions,
+      SUM(created_sales_gross_amount_euro) AS created_sales_gross_amount_euro,
+      SUM(created_sales_gross_amount) AS created_sales_gross_amount
+    FROM 
+      `ingka-ime-campman-test.wunderman.tbl_interaction_promotion_open_attributed_sales_fct`
+    WHERE 
+      last_attribution_counter = 1
+      AND EXTRACT(DATE FROM send_utc_dttm) >= '2023-01-01'
+    GROUP BY 1,2,3,4,5,6,7,8
+)
+
+SELECT 
+    int.send_category,
+    int.retail_unit_code,
+    int.customer_type,
+    int.customer_category,
+    int.send_utc_date,
+    meta.promotion_name,
+    meta.promotion_category,
+    meta.customer_segment,
+    meta.campaign_category,
+    meta.test_variant,
+    meta.program_type,
+    SUM(int.total_sends) AS total_sends,
+    SUM(int.total_bounces) AS total_bounces,
+    SUM(int.unique_opens) AS unique_opens,
+    SUM(int.unique_clicks) AS unique_clicks,
+    SUM(int.unique_optouts) AS unique_optouts,
+    SUM(conv.conversions) AS conversions,
+    SUM(conv.transactions) AS transactions,
+    SUM(conv.created_sales_gross_amount_euro) AS created_sales_gross_amount_euro,
+    SUM(conv.created_sales_gross_amount) AS created_sales_gross_amount
+
+FROM cte_interactions AS int
+
+LEFT JOIN cte_conversion AS conv
+ON int.customer_bk = conv.customer_bk
+AND int.retail_unit_code = conv.retail_unit_code
+AND int.launch_id = conv.launch_id
+
+LEFT JOIN `ingka-ime-campman-test.wunderman.tbl_interaction_promotion_and_campaign_metadata_sent_dim` meta
+ON  int.launch_id = meta.launch_id 
+AND int.retail_unit_code = meta.retail_unit_code
+
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11
+);
+
+
+    
+
+
+
+
+
