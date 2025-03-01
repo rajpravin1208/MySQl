@@ -1,0 +1,105 @@
+WITH `cte_interactions` AS (
+SELECT
+  customer_bk
+  ,retail_unit_code
+  ,launch_id
+  ,send_utc_date 
+  ,SUM(total_sends) AS total_sends
+  ,SUM(total_bounces) AS total_bounces
+  ,SUM(unique_opens) AS unique_opens
+  ,SUM(unique_clicks) AS unique_clicks 
+  ,SUM(unique_optouts) AS unique_optouts
+from `ingka-ime-campman-test.wunderman.tbl_interaction_promotion_consolidated_at_send_date_flt_fct`
+WHERE send_utc_date >= '2024-09-16' 
+-- AND retail_unit_code = 'NO'
+GROUP BY 1,2,3,4)
+
+-------********************************************************************************************************************---------------------------------------------------------
+
+,`cte_conversion` AS (
+SELECT
+  customer_bk
+  ,launch_id
+  ,retail_unit_code
+  ,EXTRACT(DATE FROM send_utc_dttm) AS send_utc_date 
+  ,COUNT(DISTINCT receipt_id) AS transactions
+  ,COUNT(DISTINCT CONCAT(customer_bk,retail_unit_code,launch_id,send_utc_dttm)) AS conversions
+  ,SUM(created_sales_gross_amount_euro) AS created_sales_gross_amount_euro
+  ,SUM(created_sales_gross_amount) AS created_sales_gross_amount
+FROM `ingka-ime-campman-test.wunderman.tbl_interaction_promotion_open_attributed_sales_fct` ----"For this analysis, conversion-related metrics for IBN follow the same attribution logic applied for Private customers (7 day window from an Open interation and last-touch attribution)"
+ ---
+WHERE last_attribution_counter = 1
+-- AND retail_unit_code = 'NO'
+AND EXTRACT(DATE FROM send_utc_dttm) >= '2024-09-16'
+GROUP BY 1,2,3,4),
+
+-------********************************************************************************************************************---------------------------------------------------------
+metaA AS (
+SELECT
+       retail_unit_code, 
+       launch_id,
+       promotion_name,
+   FROM `ingka-icf-globalanalytic-prod.customer_data_for_analytics_pii.email_interaction_promotion_and_campaign_metadata_sent_dim`
+   WHERE promotion_name like '%PaOptest'
+),
+
+-------********************************************************************************************************************---------------------------------------------------------
+
+metaB AS (
+SELECT
+       retail_unit_code, 
+       launch_id,
+       promotion_name,
+   FROM `ingka-icf-globalanalytic-prod.customer_data_for_analytics_pii.email_interaction_promotion_and_campaign_metadata_sent_dim`
+   WHERE 
+   promotion_name like '%AbandonedPlanner%'
+   and promotion_name not like '%PaOptest'
+)
+-------********************************************************************************************************************---------------------------------------------------------
+
+
+
+select    'Version A' as version,    
+          SUM(int.total_sends) AS total_sends
+          ,SUM(int.total_bounces) AS total_bounces
+          ,SUM(int.unique_opens) AS unique_opens
+          ,SUM(int.unique_clicks) AS unique_clicks
+          ,SUM(unique_optouts) AS unique_optouts
+          ,SUM(conv.conversions) AS conversions
+          ,SUM(conv.transactions) AS transactions
+          ,SUM(created_sales_gross_amount_euro) AS created_sales_gross_amount_euro
+          ,SUM(created_sales_gross_amount) AS created_sales_gross_amount
+
+FROM `cte_interactions` as int
+LEFT JOIN `cte_conversion` as conv
+ON int.customer_bk = conv.customer_bk
+AND int.retail_unit_code = conv.retail_unit_code
+AND int.launch_id = conv.launch_id
+JOIN metaA M
+ON int.retail_unit_code = M.retail_unit_code
+AND int.launch_id = M.launch_id
+GROUP BY 1
+
+UNION ALL 
+
+
+select    'Version B' as version,    
+          SUM(int.total_sends) AS total_sends
+          ,SUM(int.total_bounces) AS total_bounces
+          ,SUM(int.unique_opens) AS unique_opens
+          ,SUM(int.unique_clicks) AS unique_clicks
+          ,SUM(unique_optouts) AS unique_optouts
+          ,SUM(conv.conversions) AS conversions
+          ,SUM(conv.transactions) AS transactions
+          ,SUM(created_sales_gross_amount_euro) AS created_sales_gross_amount_euro
+          ,SUM(created_sales_gross_amount) AS created_sales_gross_amount
+
+FROM `cte_interactions` as int
+LEFT JOIN `cte_conversion` as conv
+ON int.customer_bk = conv.customer_bk
+AND int.retail_unit_code = conv.retail_unit_code
+AND int.launch_id = conv.launch_id
+JOIN metaB M
+ON int.retail_unit_code = M.retail_unit_code
+AND int.launch_id = M.launch_id
+GROUP BY 1
