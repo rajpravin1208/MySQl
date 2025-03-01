@@ -1,0 +1,643 @@
+DECLARE current_month DATE;
+DECLARE first_month DATE;
+
+SET current_month =  DATE_SUB(DATE_TRUNC(CURRENT_DATE(),MONTH),INTERVAL 1 MONTH);
+SET first_month = DATE_SUB(current_month,INTERVAL 11 MONTH);
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_prep_mother`
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 10 DAY))
+AS (
+WITH `cte_plcs` AS (--Javi: PLCS at YearMonth/retail_unit_code/customer_bk SKU
+SELECT *
+  ,DATE_TRUNC(INSERT_DATE, MONTH) AS INSERT_DATE_MONTH
+  ,CASE
+    WHEN PREDLTV_NUM is null OR PREDLTV_NUM < 0 THEN "F. NOTSET" 
+    WHEN PREDLTV_NUM < 100 THEN 'A. 0-100'
+    WHEN PREDLTV_NUM < 250 THEN 'B. 100-250'
+    WHEN PREDLTV_NUM < 500 THEN 'C. 250-500'
+    WHEN PREDLTV_NUM < 5000 THEN 'D. 500-5K'
+    ELSE 'E. >5K' END as PREDLTV_GROUP
+
+FROM 
+  (SELECT *,  cast(PREDLTV as numeric) AS PREDLTV_NUM 
+  FROM `ingka-icf-globalanalytic-prod.global_source_data.asc_ext_cust_profile_history`
+  WHERE DATE_TRUNC(INSERT_DATE,MONTH) BETWEEN first_month AND current_month
+  QUALIFY 1 = ROW_NUMBER() OVER (PARTITION BY retailunitcode, ICMID, DATE_TRUNC(INSERT_DATE,MONTH) ORDER BY INSERT_DATE DESC)))   --The QUALIFY 1 clause then selects only the most recent record per group (most recent per retailunitcode, ICMID, and month).
+
+,`cte_customer` AS (--Javi: PLCS at YearMonth/retail_unit_code/customer_bk SKU
+SELECT * 
+FROM (
+      
+      SELECT DISTINCT
+      customerSegmentSrc -- Customer segment source (Family or Business)
+      ,customer_type -- Type of customer (individual or business)
+      ,customer_category -- Category of customer (LOYALTY)
+      ,card_type -- Type of loyalty card (for Business segment)
+      ,address_postal_code -- Postal code of the customer
+      ,address_postal_code_BN -- BN format of postal code (for Business segment)
+      ,preferred_store_name -- Preferred store of the customer
+      ,card_created_order -- Order of card creation
+      ,customer_bk -- Customer unique identifier
+      ,industry_segment_label -- Business customer's industry segment
+      ,company_name -- Business customer's company name
+      ,retail_unit_code -- Retail unit code of the store
+      ,MIN(DATE_TRUNC(cm_created,MONTH)) OVER (PARTITION BY retail_unit_code, customer_bk) AS created_date -- Created date truncated to month, minimum date per customer and retail unit
+      ,CASE 
+          WHEN allow_personal_email = 'YES' 
+          AND email_verfication_code <> 'INVALID' 
+          AND email_isvalid IS NOT FALSE 
+          AND customer_status = 'Active' 
+          THEN TRUE ELSE FALSE END AS email_reachable -- Determine if the customer is reachable by email
+      ,CASE 
+          WHEN allow_sms = 'YES' 
+          AND sms_verfication_code <> 'INVALID' 
+          AND sms_isvalid IS NOT FALSE 
+          AND customer_status = 'Active' 
+          THEN TRUE ELSE FALSE END AS sms_reachable -- Determine if the customer is reachable by SMS
+      ,CASE 
+          WHEN allow_personal_email = 'YES' 
+          THEN TRUE ELSE FALSE END AS email_consent -- Whether the customer has given email consent
+      ,CASE 
+          WHEN allow_sms = 'YES' 
+          THEN TRUE ELSE FALSE END AS sms_consent -- Whether the customer has given SMS consent
+      
+      -- Subquery 2: Combine data from Family and Business segments
+      FROM(
+          -- Subquery 2.1: Select data for Family segment
+          SELECT 
+          'Family' AS customerSegmentSrc -- Label this data as Family segment
+          ,customer_type -- Customer type for Family (typically individual)
+          ,customer_category -- Customer category (LOYALTY)
+          ,CAST(NULL AS STRING) AS card_type -- Card type is NULL for Family customers
+          ,address_postal_code -- Postal code of the customer
+          ,CAST(NULL AS STRING) AS address_postal_code_BN -- No BN postal code for Family customers
+          ,preferred_store_name -- Preferred store of the customer
+          ,card_created_order -- Order in which the card was created
+          ,cm_created -- Customer creation date
+          ,customer_bk -- Unique customer identifier
+          ,CAST(NULL AS STRING) AS industry_segment_label -- Industry segment is NULL for Family customers
+          ,CAST(NULL AS STRING) AS company_name -- Company name is NULL for Family customers
+          ,retail_unit_code -- Retail unit code for Family customers
+          ,cm_created AS created_date -- Use cm_created as the created date
+          ,allow_personal_email -- Indicates if personal email is allowed
+          ,allow_sms -- Indicates if SMS is allowed
+          ,email_verfication_code -- Email verification code
+          ,sms_verfication_code -- SMS verification code
+          ,email_isvalid -- Boolean indicating if the email is valid
+          ,sms_isvalid -- Boolean indicating if the SMS is valid
+          ,customer_status -- Status of the customer (e.g., Active)
+
+          -- Filtering for Family segment
+          FROM `ingka-icf-globalanalytic-prod.customer_data_for_analytics_pii.customer_fct`
+          WHERE LOWER(TRIM(customer_type)) IN ('individual') -- Only individual customers
+            AND customer_account_state = 'REGISTERED' -- Must be registered
+            AND customer_category = 'LOYALTY' -- Must be part of the loyalty program
+            AND retail_unit_code NOT IN ('R1','GL','XX','IK','CN','RU') -- Exclude certain retail units
+            
+          -- Subquery 2.2: Select data for Business segment
+          UNION ALL -- Combine Family and Business data
+          SELECT DISTINCT
+          'Business' AS customerSegmentSrc -- Label this data as Business segment
+          ,'Business' AS customer_type -- Customer type is Business
+          ,customer_category -- Customer category (LOYALTY)
+          ,card_type -- Card type for Business customers
+          ,address_postal_code -- Postal code of the business
+          ,address_postal_code AS address_postal_code_BN -- BN postal code for Business customers
+          ,preferred_store_name -- Preferred store of the business
+          ,card_created_order -- Order in which the card was created
+          ,DATE_TRUNC(created_date,MONTH) AS status_date -- Status date truncated to the month
+          ,customer_bk -- Unique customer identifier
+          ,industry_segment_label -- Industry segment label for Business customers
+          ,company_name -- Company name for Business customers
+          ,retail_unit_code -- Retail unit code for Business customers
+          ,created_date -- Use created_date for Business segment
+          ,IF(email_accepted=TRUE OR email_accepted IS NULL,'YES',NULL) AS allow_personal_email -- Whether the business customer accepted email
+          ,CAST(NULL AS STRING) AS allow_sms -- No SMS data for Business customers
+          ,email_verified AS email_verfication_code -- Email verification code for Business customers
+          ,CAST(NULL AS STRING) AS sms_verfication_code -- No SMS verification code for Business customers
+          ,TRUE AS email_isvalid -- Email is always valid for Business customers
+          ,CAST(NULL AS BOOL) AS sms_isvalid -- No SMS validation for Business customers
+          ,card_status AS customer_status -- Status of the business customer (e.g., Active)
+
+          -- Filtering for Business segment
+          FROM `ingka-icf-globalanalytic-prod.customer_data_for_analytics_pii.business_customer_fct` 
+          WHERE customer_account_state = 'REGISTERED' -- Must be registered
+            AND customer_category = 'LOYALTY' -- Must be part of the loyalty program
+            AND retail_unit_code NOT IN ('R1','GL','XX','IK','CN','RU') -- Exclude certain retail units
+          ) main -- End of subquery that merges Family and Business segments
+)
+
+-- Ensure unique customers per retail unit by selecting the earliest card created order
+QUALIFY 1 = ROW_NUMBER() OVER (PARTITION BY retail_unit_code, customer_bk ORDER BY card_created_order ASC))
+-- Retains only the first (earliest) row per customer/retail unit based on card creation order
+
+
+
+,`cte_interaction` AS (--Javi: Interaction data at launch_id/send_utc_date/retail_unit_code/customer_bk SKU
+SELECT
+launch_id
+,send_utc_date
+,DATE_TRUNC(send_utc_date,MONTH) AS send_utc_date_month
+,retail_unit_code
+,customer_bk
+,SUM(total_sends) AS total_sends
+,(SUM(total_sends) - SUM(total_bounces)) AS total_delivered
+,SUM(total_bounces) AS total_bounces 
+,SUM(unique_opens) AS unique_opens
+,SUM(total_clicks) AS total_clicks
+,SUM(unique_clicks) AS unique_clicks
+,SUM(unique_optouts) AS unique_optouts
+
+FROM `ingka-icf-globalanalytic-prod.customer_data_for_analytics_pii.email_interaction_promotion_consolidated_at_send_date_flt_fct`
+
+WHERE DATE_TRUNC(send_utc_date,MONTH) BETWEEN first_month AND current_month
+AND retail_unit_code NOT IN ('CN','RU','UA')
+AND retail_unit_code IS NOT NULL
+
+GROUP BY 1,2,3,4,5)
+
+,`cte_sales` as (
+SELECT 
+launch_Id
+,retail_unit_code
+,customer_bk
+,DATE(send_utc_dttm) AS send_utc_date
+,send_utc_dttm
+,receipt_Id
+,CONCAT(retail_unit_code,customer_bk,launch_id,send_utc_dttm) AS conversions
+,SUM(created_sales_gross_amount_euro) AS created_sales_gross_amount_euro
+FROM `ingka-icf-globalanalytic-prod.customer_data_for_analytics_pii.email_interaction_promotion_open_attributed_sales_fct`
+
+WHERE DATE(send_utc_dttm) BETWEEN first_month AND current_month
+AND send_to_interact>0
+AND created_sales_gross_amount_euro>0
+AND last_attribution_counter=1 
+
+GROUP BY 1,2,3,4,5,6,7),
+
+`cte_IntHFB&Sales` AS (
+    -- First SELECT: Aggregating General Campaign Interaction Data (NORMAL Source)
+    SELECT 
+        'NORMAL' AS SRC -- Mark the source as 'NORMAL' to distinguish in UNION ALL.
+        ,i.launch_Id -- Launch ID for the email campaign.
+        ,i.retail_unit_code -- Retail unit code (likely the store or branch).
+        ,i.customer_bk -- Customer identifier.
+        ,i.send_utc_date -- The date the email was sent.
+        ,i.send_utc_date_month -- The month of the email send date.
+        ,CAST(NULL AS STRING) AS hfb_name -- HFB name is NULL since this is general campaign data.
+        ,i.total_sends -- Total number of emails sent.
+        ,i.unique_opens -- Unique email opens.
+        ,i.unique_clicks -- Unique email clicks.
+        ,i.total_clicks -- Total clicks on the email.
+        ,i.unique_optouts -- Number of users opting out of future emails.
+        ,COUNT(DISTINCT s.conversions) AS conversions -- Count distinct conversions from sales data.
+        ,COUNT(DISTINCT s.receipt_id) AS transactions -- Count distinct transactions from sales data.
+        ,SUM(s.created_sales_gross_amount_euro) AS created_sales_gross_amount_euro -- Total sales (in Euros).
+        ,CAST(NULL AS NUMERIC) AS conversions_HFB -- HFB-specific conversions not applicable here.
+        ,CAST(NULL AS NUMERIC) AS created_sales_gross_amount_euro_HFB -- HFB-specific sales not applicable.
+    FROM `cte_interaction` i
+    LEFT JOIN `cte_sales` s -- Left join to include related sales data.
+        ON i.launch_Id = s.launch_Id 
+        AND i.send_utc_date = s.send_utc_date
+        AND i.retail_unit_code = s.retail_unit_code
+        AND i.customer_bk = s.customer_bk -- Joining based on campaign and customer details.
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 -- Group by interaction details.
+    
+    UNION ALL
+    
+    -- Second SELECT: Aggregating HFB-Specific Sales Data (HFB Source)
+    SELECT 
+        'HFB' AS SRC -- Mark the source as 'HFB' for HFB-specific data.
+        ,s.launch_Id -- Launch ID.
+        ,s.retail_unit_code -- Retail unit code (store or branch).
+        ,s.customer_bk -- Customer identifier.
+        ,s.send_utc_date -- Date of the email send or transaction.
+        ,DATE_TRUNC(s.send_utc_date, MONTH) AS send_utc_date_month -- Truncating to get the month.
+        ,CONCAT(h.hfb_no, ' - ', h.hfb_name) AS hfb_name -- Combining HFB number and name.
+        ,CAST(NULL AS NUMERIC) AS total_sends -- Not applicable for HFB sales data.
+        ,CAST(NULL AS NUMERIC) AS unique_opens -- Not applicable for HFB sales data.
+        ,CAST(NULL AS NUMERIC) AS unique_clicks -- Not applicable for HFB sales data.
+        ,CAST(NULL AS NUMERIC) AS total_clicks -- Not applicable for HFB sales data.
+        ,CAST(NULL AS NUMERIC) AS unique_optouts -- Not applicable for HFB sales data.
+        ,CAST(NULL AS NUMERIC) AS conversions -- General conversions not counted here.
+        ,CAST(NULL AS NUMERIC) AS transactions -- General transactions not counted here.
+        ,CAST(NULL AS NUMERIC) AS created_sales_gross_amount_euro -- General sales not summed here.
+        ,COUNT(DISTINCT CONCAT(s.retail_unit_code, s.customer_bk, s.launch_id, s.send_utc_dttm)) AS conversions_HFB -- Counting distinct HFB conversions.
+        ,SUM(h.created_sales_gross_amount_euro) AS created_sales_gross_amount_euro_HFB -- Summing HFB sales (in Euros).
+    FROM `cte_sales` s
+    INNER JOIN `ingka-icf-globalanalytic-prod.customer_data_for_analytics_pii.email_interaction_promotion_created_sales_fct` h -- Join HFB data.
+        ON h.receipt_Id = s.receipt_Id 
+        AND h.retail_unit_code = s.retail_unit_code
+        AND h.customer_bk = s.customer_bk -- Joining based on HFB-specific details.
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 -- Grouping by HFB-specific details.
+)
+
+
+SELECT   
+    i.*, -- Select all columns from the subquery 'i' (combined interaction and customer data).
+    pMoM.gender, -- Adding gender from the PLCS table.
+    pMoM.loystatus, -- Adding loyalty status from the PLCS table.
+    pMoM.age_group, -- Adding age group from the PLCS table.
+    pMoM.living_with_children, -- Adding living with children status from the PLCS table.
+    pMoM.RFM_M0, -- Adding Recency, Frequency, Monetary value score from PLCS table.
+    pMoM.PLCS_STAGE_M0, -- Adding PLCS stage from PLCS table.
+    pMoM.PLCS_SUB_STAGE_M0, -- Adding PLCS substage from PLCS table.
+    pMoM.PLCS_SUBCLS_STAGE_M0, -- Adding PLCS subclass stage from PLCS table.
+    pMoM.EMAIL_ENGAGEMENT_CATEGORY, -- Adding email engagement category from PLCS table.
+    pMoM.OVERALL_ENGAGEMENT_CATEGORY, -- Adding overall engagement category from PLCS table.
+    pMoM.WEB_ENGAGEMENT_CATEGORY, -- Adding web engagement category from PLCS table.
+    pMoM.INTERACTION_ENGAGEMENT_CATEGORY, -- Adding interaction engagement category from PLCS table.
+    pMoM.PREDLTV_GROUP -- Adding predicted lifetime value group from PLCS table.
+  
+FROM (
+    -- Inner query: Combining interaction and customer metadata data
+    SELECT
+        LEFT(CAST(i.send_utc_date_month AS STRING),7) AS YearMonth, -- Extracting Year and Month from the send date.
+        COALESCE(i.send_utc_date_month, current_month) AS send_utc_date_month, -- Using the email send month or current month if null.
+        i.send_utc_date AS send_utc_date, -- Email send date.
+        DATE_DIFF(current_month, i.send_utc_date_month, MONTH) AS monthDiff, -- Difference in months between current and send date.
+
+        COALESCE(i.retail_unit_code, c.retail_unit_code) AS retail_unit_code, -- Use retail_unit_code from interaction or customer metadata.
+        CONCAT(COALESCE(i.retail_unit_code, c.retail_unit_code), '-', COALESCE(i.customer_bk, c.customer_bk)) AS customerId, -- Creating unique customer ID.
+        COALESCE(i.customer_bk, c.customer_bk) AS customer_bk, -- Use customer_bk from interaction or customer metadata.
+
+        CONCAT(m.retail_unit_code, m.launch_id) AS promotion_bk, -- Creating promotion identifier.
+        COALESCE(m.customerSegmentSrc, c.customerSegmentSrc) AS customerSegmentSrc, -- Customer segmentation source.
+        m.customer_segment, -- Customer segment.
+        m.campaign_category, -- Campaign category.
+        m.promotion_category, -- Promotion category.
+        UPPER(TRIM(m.campaign_name)) AS campaign_name, -- Campaign name in uppercase, trimmed.
+        m.promotion_name_base, -- Promotion base name.
+        m.promotion_subject_test, -- Test subject for the promotion.
+        m.test_variant, -- Test variant (A/B test).,
+        m.promotion_name,
+        i.HFB_NAME, -- HFB name.
+
+        CASE WHEN c.customerSegmentSrc IS NOT NULL THEN TRUE ELSE FALSE END AS customerMetadataFlag, -- Check if customer metadata is available.
+        CASE WHEN m.launch_id IS NOT NULL THEN TRUE ELSE FALSE END AS attributionFlag, -- Check if launch_id is available.
+
+        c.customer_category, -- Customer category.
+        c.customer_type, -- Customer type.
+        c.card_type, -- Customer card type.
+        c.address_postal_code, -- Customer postal code.
+        c.address_postal_code_BN, -- Customer postal code BN.
+        c.preferred_store_name, -- Customer's preferred store.
+        c.industry_segment_label, -- Customer industry segment.
+
+        CASE WHEN i.SRC = 'HFB' THEN i.HFB_NAME ELSE 'AGG' END AS HFB_NAME_VIEW, -- Determine if HFB name is relevant or aggregated data.
+        CASE WHEN i.unique_clicks > 0 AND m.send_type = 'TRIGGERED' THEN UPPER(TRIM(m.Campaign_name)) ELSE 'AGG' END AS campaignNameEngagement, -- Engagement metric based on unique clicks and campaign type.
+
+        total_sends, -- Total sends.
+        unique_opens, -- Unique opens.
+        unique_clicks, -- Unique clicks.
+        total_clicks, -- Total clicks.
+        unique_optouts, -- Unique opt-outs.
+        transactions, -- Number of transactions.
+        conversions, -- Number of conversions.
+        conversions_HFB, -- HFB-specific conversions.
+        created_sales_gross_amount_euro, -- Total gross sales amount.
+        created_sales_gross_amount_euro_HFB -- HFB-specific sales gross amount.
+    
+    FROM (
+        -- Selecting customer segment and joining source type.
+        SELECT *, 
+            CASE WHEN customer_segment IN ('IK','IF','PA') THEN 'Family' 
+                WHEN customer_segment IN ('BN','BR','BA') THEN 'Business' 
+                ELSE 'Other' END AS CustomerSegmentSrc, -- Classify customer segments as Family, Business, or Other.
+            0 AS joinSrc -- Marking source as 0 for default.
+
+        FROM `ingka-icf-globalanalytic-prod.customer_data_for_analytics_pii.email_interaction_promotion_and_campaign_metadata_sent_dim`) m -- Email interaction metadata source.
+
+    INNER JOIN `cte_IntHFB&Sales` i -- Joining with interaction and sales data CTE.
+        ON m.launch_Id = i.launch_Id 
+        AND m.retail_unit_code = i.retail_unit_code
+
+    FULL OUTER JOIN `cte_customer` c -- Full outer join with customer metadata table.
+        ON i.retail_unit_code = c.retail_unit_code 
+        AND i.customer_bk = c.customer_bk
+        AND i.send_utc_date_month >= c.created_date
+) i
+
+LEFT JOIN `cte_plcs` pMoM -- Left join with PLCS (Predictive Lifecycle Segmentation) data.
+    ON i.retail_unit_code = pMoM.retailUnitCode
+    AND i.customer_bk = pMoM.ICMID
+    AND i.send_utc_date_month = pMoM.INSERT_DATE_MONTH)-- Joining by retail unit, customer, and month.
+;
+
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 10 DAY))
+AS (
+WITH `cte_main` AS (
+SELECT *
+,CASE MAX(test_variant) OVER (PARTITION BY promotion_name_base)
+  WHEN 'A' THEN '1'
+  WHEN 'B' THEN '2'
+  WHEN NULL THEN 'NONE'
+  ELSE '+2' END AS promotion_group_number
+ ,DENSE_RANK() OVER (ORDER BY GENDER DESC, LOYSTATUS DESC,AGE_GROUP DESC,RFM_M0 DESC,PLCS_STAGE_M0 DESC, EMAIL_ENGAGEMENT_CATEGORY DESC,
+                              CARD_TYPE DESC,ADDRESS_POSTAL_CODE_BN DESC,PREFERRED_STORE_NAME DESC,INDUSTRY_SEGMENT_LABEL DESC, customer_category DESC, customer_type DESC) AS CUSTOMER_SKU
+ ,DENSE_RANK() OVER (ORDER BY GENDER DESC, LOYSTATUS DESC,AGE_GROUP DESC,RFM_M0 DESC,PLCS_STAGE_M0 DESC, PLCS_SUB_STAGE_M0 DESC,PLCS_SUBCLS_STAGE_M0 DESC, EMAIL_ENGAGEMENT_CATEGORY DESC, OVERALL_ENGAGEMENT_CATEGORY DESC,
+                              WEB_ENGAGEMENT_CATEGORY DESC, INTERACTION_ENGAGEMENT_CATEGORY DESC,
+                              PREDLTV_GROUP DESC,CARD_TYPE DESC,ADDRESS_POSTAL_CODE DESC,PREFERRED_STORE_NAME DESC,INDUSTRY_SEGMENT_LABEL DESC, customer_category DESC, customer_type DESC) AS CUSTOMER_DTL_SKU_prev
+ ,DENSE_RANK() OVER (ORDER BY PLCS_STAGE_M0 DESC, PLCS_SUB_STAGE_M0 DESC,PLCS_SUBCLS_STAGE_M0 DESC, EMAIL_ENGAGEMENT_CATEGORY DESC, customer_category DESC, customer_type DESC) AS CUSTOMER_AGG_SKU_prev                      
+ ,DENSE_RANK() OVER (ORDER BY HFB_NAME DESC) AS HFB_SKU
+ ,DENSE_RANK() OVER (ORDER BY promotion_bk DESC, YEARMONTH DESC) AS PROMOTION_SKU
+
+FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_prep_mother`)
+
+SELECT *
+,FIRST_VALUE(CUSTOMER_DTL_SKU) OVER (PARTITION BY customerId ORDER BY send_utc_date DESC) AS CUSTOMER_DTL_SKU_LM
+,FIRST_VALUE(CUSTOMER_AGG_SKU) OVER (PARTITION BY customerId ORDER BY send_utc_date DESC) AS CUSTOMER_AGG_SKU_LM
+FROM (SELECT * 
+        ,CUSTOMER_DTL_SKU_NUM + CUSTOMER_SKU_NUM + CUSTOMER_AGG_SKU_prev AS CUSTOMER_AGG_SKU
+        ,CUSTOMER_SKU_NUM + CUSTOMER_DTL_SKU_prev AS CUSTOMER_DTL_SKU
+      FROM `cte_main`, (SELECT  MAX(CUSTOMER_DTL_SKU_prev) AS CUSTOMER_DTL_SKU_NUM, 
+                                MAX(CUSTOMER_SKU) AS CUSTOMER_SKU_NUM FROM `cte_main`)));
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_EV_AE_GT_customerSKU_dim` --POWERBI
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 32 DAY))
+AS (
+  SELECT
+  CUSTOMER_DTL_SKU_LM AS CUSTOMER_SKU
+  ,TRUE AS blankFilter
+  ,GENDER 
+  ,LOYSTATUS
+  ,AGE_GROUP
+  ,CAST(NULL AS STRING) AS LIVING_WITH_CHILDREN
+  ,RFM_M0
+  ,PLCS_STAGE_M0
+  ,PLCS_SUB_STAGE_M0
+  ,PLCS_SUBCLS_STAGE_M0
+  ,EMAIL_ENGAGEMENT_CATEGORY
+  ,OVERALL_ENGAGEMENT_CATEGORY
+  ,WEB_ENGAGEMENT_CATEGORY
+  ,INTERACTION_ENGAGEMENT_CATEGORY
+  ,PREDLTV_GROUP 
+  ,CARD_TYPE
+  ,ADDRESS_POSTAL_CODE
+  ,PREFERRED_STORE_NAME
+  ,INDUSTRY_SEGMENT_LABEL
+  ,customer_category
+  ,customer_type
+
+  FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+  QUALIFY 1 = ROW_NUMBER() OVER (PARTITION BY CUSTOMER_DTL_SKU_LM)
+
+  UNION ALL 
+
+  SELECT
+  CUSTOMER_SKU
+  ,TRUE AS blankFilter
+  ,GENDER 
+  ,LOYSTATUS
+  ,AGE_GROUP
+  ,CAST(NULL AS STRING) AS LIVING_WITH_CHILDREN
+  ,RFM_M0
+  ,PLCS_STAGE_M0
+  ,CAST(NULL AS STRING) AS PLCS_SUB_STAGE_M0
+  ,CAST(NULL AS STRING) AS PLCS_SUBCLS_STAGE_M0
+  ,EMAIL_ENGAGEMENT_CATEGORY
+  ,CAST(NULL AS STRING) AS OVERALL_ENGAGEMENT_CATEGORY
+  ,CAST(NULL AS STRING) AS WEB_ENGAGEMENT_CATEGORY
+  ,CAST(NULL AS STRING) AS INTERACTION_ENGAGEMENT_CATEGORY
+  ,CAST(NULL AS STRING) AS PREDLTV_GROUP 
+  ,CARD_TYPE
+  ,ADDRESS_POSTAL_CODE_BN AS ADDRESS_POSTAL_CODE
+  ,PREFERRED_STORE_NAME
+  ,INDUSTRY_SEGMENT_LABEL
+  ,customer_category
+  ,customer_type
+ 
+  FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+  QUALIFY 1 = ROW_NUMBER() OVER (PARTITION BY CUSTOMER_SKU)
+  
+  UNION ALL 
+
+  SELECT
+  CUSTOMER_AGG_SKU_LM AS CUSTOMER_SKU
+  ,TRUE AS blankFilter
+  ,CAST(NULL AS STRING) AS GENDER 
+  ,CAST(NULL AS STRING) AS LOYSTATUS
+  ,CAST(NULL AS STRING) AS AGE_GROUP
+  ,CAST(NULL AS STRING) AS LIVING_WITH_CHILDREN
+  ,CAST(NULL AS STRING) AS RFM_M0
+  ,PLCS_STAGE_M0
+  ,PLCS_SUB_STAGE_M0
+  ,PLCS_SUBCLS_STAGE_M0
+  ,EMAIL_ENGAGEMENT_CATEGORY
+  ,CAST(NULL AS STRING) AS OVERALL_ENGAGEMENT_CATEGORY
+  ,CAST(NULL AS STRING) AS WEB_ENGAGEMENT_CATEGORY
+  ,CAST(NULL AS STRING) AS INTERACTION_ENGAGEMENT_CATEGORY
+  ,CAST(NULL AS STRING) AS PREDLTV_GROUP 
+  ,CAST(NULL AS STRING) AS CARD_TYPE
+  ,CAST(NULL AS STRING) AS ADDRESS_POSTAL_CODE
+  ,CAST(NULL AS STRING) AS PREFERRED_STORE_NAME
+  ,CAST(NULL AS STRING) AS INDUSTRY_SEGMENT_LABEL
+  ,customer_category
+  ,customer_type
+  
+  FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+  QUALIFY 1 = ROW_NUMBER() OVER (PARTITION BY CUSTOMER_AGG_SKU_LM)
+);
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_estimation_of_value_HFBSKU_dim` --POWERBI
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 32 DAY))
+AS (
+  SELECT DISTINCT
+  HFB_SKU
+  ,HFB_NAME
+  FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+  WHERE attributionFlag= TRUE);
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_estimation_of_value_promotionSKU_dim` -- POWERBI
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 32 DAY))
+AS (
+  SELECT DISTINCT
+  PROMOTION_SKU
+  ,promotion_name
+  ,YearMonth
+  ,retail_unit_code
+  ,customerSegmentSrc
+  ,customer_segment AS customerSegment
+  ,promotion_category AS emailCategory
+  ,campaign_category AS campaignCategory
+  ,campaign_name AS campaignName
+  ,promotion_group_number
+  ,promotion_subject_test AS promotionSubjectTest
+  ,test_variant
+  FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+  WHERE attributionFlag= TRUE);
+
+----- End of Estimation of value--------------------------------------------------------------------------
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_globalTrends_engAndRevMetrics_fct`
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 32 DAY))
+AS (
+  SELECT DISTINCT
+  send_utc_date AS sendDate
+  ,retail_unit_code
+  ,promotion_bk
+  ,CUSTOMER_AGG_SKU_LM AS customer_sku
+  ,TRUE AS blankFilter
+  ,SUM(CASE WHEN total_sends != 0 THEN total_sends END) AS totalSends
+  ,SUM(CASE WHEN unique_opens != 0 THEN unique_opens END) AS uniqueOpens
+  ,SUM(CASE WHEN total_clicks != 0 THEN total_clicks END) AS totalClicks
+  ,SUM(CASE WHEN unique_clicks != 0 THEN unique_clicks END) AS uniqueClicks
+  ,SUM(CASE WHEN unique_optouts != 0 THEN unique_optouts END) AS uniqueOptouts
+  ,SUM(CASE WHEN conversions != 0 THEN conversions END) AS uniqueConversions
+  ,SUM(CASE WHEN transactions != 0 THEN transactions END) AS Transactions
+  ,SUM(CASE WHEN created_sales_gross_amount_euro != 0 THEN created_sales_gross_amount_euro END) AS revenueEur
+  FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+  WHERE attributionFlag= TRUE
+  GROUP BY 1,2,3,4,5
+);
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_globalTrends_custMetrics_fct`
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 32 DAY))
+AS (
+  SELECT DISTINCT
+  retail_unit_code
+  ,CUSTOMER_AGG_SKU_LM AS customer_sku
+  ,TRUE AS blankFilter
+  ,COUNT(DISTINCT customerId) AS Distinct_Customers
+  ,COUNT(DISTINCT IF(conversions > 0,customerId,NULL)) AS Distinct_Buyers
+  ,COUNT(DISTINCT IF(unique_opens > 0,customerId,NULL)) AS Openers
+  ,COUNT(DISTINCT IF(unique_clicks > 0,customerId,NULL)) AS Clickers
+  ,COUNT(DISTINCT IF(unique_optouts > 0,customerId,NULL)) AS Unsubscribers
+  ,SUM(CASE WHEN transactions != 0 THEN transactions END) AS Transactions
+  ,SUM(CASE WHEN created_sales_gross_amount_euro != 0 THEN created_sales_gross_amount_euro END) AS revenueEur
+  ,MIN(send_utc_date) AS min_sendDate
+  ,MAX(send_utc_date) AS max_sendDate
+  FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+  WHERE attributionFlag= TRUE
+  GROUP BY 1,2,3
+);
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_estimation_of_value_fct` --POWERBI
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 32 DAY))
+AS (
+  SELECT
+  PROMOTION_SKU
+  ,HFB_SKU
+  ,CUSTOMER_SKU
+  ,TRUE AS blankFilter
+  ,SUM(CASE WHEN total_sends!=0 THEN total_sends END) AS totalSent
+  ,SUM(CASE WHEN unique_clicks!=0 THEN unique_clicks END) AS uniqueClicks
+  ,SUM(CASE WHEN conversions!=0 THEN conversions END) AS conversion
+  ,SUM(CASE WHEN conversions_HFB!=0 THEN conversions_HFB END) AS conversion_HFB
+  ,SUM(CASE WHEN created_sales_gross_amount_euro!=0 THEN created_sales_gross_amount_euro END) AS revenueEur
+  ,SUM(CASE WHEN created_sales_gross_amount_euro_HFB!=0 THEN created_sales_gross_amount_euro_HFB END) AS revenueEur_HFB
+  FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother`
+  WHERE attributionFlag= TRUE
+  GROUP BY 1,2,3,4);
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_audience_estimation_fct`
+OPTIONS (expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 32 DAY))
+AS (
+WITH `cte_main` AS (SELECT DISTINCT
+COALESCE(hfb.HFB_NAME_VIEW,'AGG') AS HFB_NAME_VIEW
+,camp.retail_unit_code
+,camp.campaignNameEngagement
+,CUSTOMER_DTL_SKU_LM AS CUSTOMER_SKU
+,customerSegmentSrc
+,camp.customerId
+,hfb.buyers
+,TRUE AS blankFilter
+,MAX(CASE WHEN monthDiff < 4 AND total_sends > 0 THEN 'Y' ELSE 'N' END)   OVER (PARTITION BY camp.customerId) AS sendIn3M
+,MAX(CASE WHEN monthDiff < 7 AND total_sends > 0 THEN 'Y' ELSE 'N' END)   OVER (PARTITION BY camp.customerId) AS sendIn6M
+,MAX(CASE WHEN monthDiff < 4 AND unique_opens > 0 THEN 'Y' ELSE 'N' END)  OVER (PARTITION BY camp.customerId) AS openIn3M
+,MAX(CASE WHEN monthDiff < 7 AND unique_opens > 0 THEN 'Y' ELSE 'N' END)  OVER (PARTITION BY camp.customerId) AS openIn6M
+,MAX(CASE WHEN monthDiff < 4 AND unique_clicks > 0 THEN 'Y' ELSE 'N' END) OVER (PARTITION BY camp.customerId) AS clickIn3M
+,MAX(CASE WHEN monthDiff < 7 AND unique_clicks > 0 THEN 'Y' ELSE 'N' END) OVER (PARTITION BY camp.customerId) AS clickIn6M
+FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother` camp
+            
+LEFT JOIN  (SELECT DISTINCT HFB_NAME_VIEW, customerId AS buyers, customerId FROM `ingka-ime-campman-test.wunderman.tbl_campaign_value_estimation_performance_mother` WHERE HFB_NAME_VIEW != 'AGG') hfb 
+ON camp.customerId=hfb.customerId)
+
+,`cte_precalc` AS (
+SELECT
+CUSTOMER_SKU
+,'Select all' AS HFB_NAME_VIEW
+,'Select all' AS campaignNameEngagement
+,blankFilter
+,retail_unit_code
+,sendIn3M
+,sendIn6M
+,openIn3M
+,openIn6M
+,clickIn3M
+,clickIn6M
+,customerSegmentSrc
+,COUNT(DISTINCT customerId) AS customersNum
+FROM `cte_main`
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12
+
+UNION ALL
+  
+SELECT
+CUSTOMER_SKU
+,HFB_NAME_VIEW
+,'Select all' AS campaignNameEngagement
+,blankFilter
+,retail_unit_code
+,sendIn3M
+,sendIn6M
+,openIn3M
+,openIn6M
+,clickIn3M
+,clickIn6M
+,customerSegmentSrc
+,COUNT(DISTINCT buyers) AS customersNum
+FROM `cte_main`
+WHERE HFB_NAME_VIEW!= 'AGG'
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12
+
+UNION ALL 
+
+SELECT
+CUSTOMER_SKU
+,'Select all' AS HFB_NAME_VIEW
+,campaignNameEngagement
+,blankFilter
+,retail_unit_code
+,sendIn3M
+,sendIn6M
+,openIn3M
+,openIn6M
+,clickIn3M
+,clickIn6M
+,customerSegmentSrc
+,COUNT(DISTINCT customerId) AS customersNum
+FROM `cte_main`
+WHERE campaignNameEngagement!= 'AGG'
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12
+
+UNION ALL
+
+SELECT
+CUSTOMER_SKU
+,HFB_NAME_VIEW
+,campaignNameEngagement
+,blankFilter
+,retail_unit_code
+,sendIn3M
+,sendIn6M
+,openIn3M
+,openIn6M
+,clickIn3M
+,clickIn6M
+,customerSegmentSrc
+,COUNT(DISTINCT buyers) AS customersNum
+FROM `cte_main`
+WHERE HFB_NAME_VIEW!= 'AGG' AND campaignNameEngagement!= 'AGG'
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12)
+  
+SELECT *
+,CASE HFB_NAME_VIEW 
+  WHEN 'Select all' THEN 1
+  ELSE 1 + DENSE_RANK() OVER (ORDER BY HFB_NAME_VIEW ASC) END AS HFB_NAME_VIEW_SORT
+,CASE campaignNameEngagement 
+  WHEN 'Select all' THEN 1
+  ELSE 1 + DENSE_RANK() OVER (ORDER BY campaignNameEngagement ASC) END AS campaignNameEngagement_SORT
+FROM `cte_precalc` );
