@@ -1,0 +1,56 @@
+  CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.tbl_interactions_plcs_update_fact` 
+as(
+  
+  WITH `cte_interactions` AS (
+  
+  SELECT
+  send_category,
+  retail_unit_code
+  ,customer_bk 
+  ,launch_id
+  ,CONCAT(retail_unit_code, launch_id) AS promotion_bk
+  ,send_utc_date -- 
+  ,total_sends AS total_sends
+  ,total_bounces AS total_bounces
+  ,unique_opens AS unique_opens
+  ,unique_clicks AS unique_clicks 
+  ,unique_optouts AS unique_optouts
+from `ingka-ime-campman-test.wunderman.tbl_interaction_promotion_consolidated_at_send_date_flt_fct`
+WHERE send_utc_date >= DATE_ADD(CAST(FORMAT_DATE("%Y-%m-01", current_date()) AS DATE), INTERVAL -16 MONTH) 
+  AND send_utc_date <= CURRENT_DATE())
+
+  ,`cte_AScore` AS (
+  SELECT
+    ICMID AS customer_bk
+    ,(EMAIL_ENGAGEMENT_CATEGORY) AS email_engagement_category
+    ,(PLCS_STAGE_M0) AS plscs_stage_m0
+    ,CAST(FORMAT_DATE("%Y-%m-01", INSERT_DATE) AS DATE) AS insert_date_monthly
+    ,ROW_NUMBER() OVER (PARTITION BY ICMID,CAST(FORMAT_DATE("%Y-%m-01", INSERT_DATE) AS DATE) ORDER BY INSERT_DATE DESC) AS customer_filter 
+  FROM `ingka-icf-globalanalytic-prod.global_source_data.asc_ext_cust_profile_history`
+  WHERE INSERT_DATE>= DATE_ADD(CAST(FORMAT_DATE("%Y-%m-01", current_date()) AS DATE), INTERVAL -16 MONTH))
+
+
+  SELECT
+  int.retail_unit_code
+  ,int.send_category
+  ,int.promotion_bk
+  ,int.send_utc_date 
+  ,aScore.email_engagement_category
+  ,aScore.plscs_stage_m0
+  ,SUM(int.total_sends) AS total_sends
+  ,SUM(int.total_bounces) AS total_bounces
+  ,SUM(int.unique_opens) AS unique_opens
+  ,SUM(int.unique_clicks) AS unique_clicks
+  ,SUM(unique_optouts) AS unique_optouts
+
+from `cte_interactions` AS int
+
+LEFT JOIN `cte_AScore` AS aScore
+  ON int.customer_bk=aScore.customer_bk
+  AND  CAST(FORMAT_DATE("%Y-%m-01", int.send_utc_date) AS DATE) = aScore.insert_date_monthly -- Matching only the first day of the month
+   AND customer_filter=1
+
+
+
+GROUP BY
+  1,2,3,4,5,6)
