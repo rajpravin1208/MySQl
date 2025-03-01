@@ -1,0 +1,135 @@
+
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.cutomer_website_visiting`
+OPTIONS(expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(),INTERVAL 30 DAY))
+AS(
+
+SELECT
+    e.page_path,
+    es.session_startdate,
+    es.client_id,
+    es.session_id,
+    es.session.party_uid
+FROM `ingka-icf-globalanalytic-prod.global_source_data_pii.episod_sessions` AS es
+CROSS JOIN UNNEST(es.session.event) AS e
+WHERE (e.page_path like '%/es/en/%'
+    or e.page_path like '%/es/es/%'
+    or e.page_path like '%/no/no/%') -- *CP: Why not filter on the specific pages we are interested already? output table would be much smaller to work with
+AND DATE(es.session_startdate) BETWEEN '2024-11-01' AND '2025-01-31'); -- 3 months data is available
+
+---------------------------******************************************************************************************************************************
+
+CREATE OR REPLACE TABLE `ingka-ime-campman-test.wunderman.table2`
+OPTIONS(expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(),INTERVAL 30 DAY))
+AS(
+
+    SELECT 
+    party_uid AS Ikea_Customer_id,
+    client_id as Total_customers,
+    session_id As Total_sesson,
+    page_path,
+    session_startdate,
+        CASE 
+            WHEN es.page_path IN ('/es/en/circular/','/es/es/circular/','/no/no/circular/') THEN 'Circular Hub'
+            WHEN (es.page_path like '%es/es/buy%'
+                or  es.page_path like '%es/en/buy%'
+                or  es.page_path like '%/no/no/buy%') THEN 'Buy Back'
+            WHEN es.page_path IN ('/es/en/circular/buy-back-quote/','/es/en/circular/buy-back-quote',
+                                '/es/es/circular/buy-back-quote/','/es/es/circular/buy-back-quote',
+                                '/no/no/circular/buy-back-quote/','/no/no/circular/buy-back-quote') THEN 'Buy Back Quote'
+            WHEN es.page_path IN ('/es/en/circular/second-hand/','/es/en/circular/second-hand',
+                                '/es/es/circular/second-hand/','/es/es/circular/second-hand',
+                                '/no/no/circular/second-hand/','/no/no/circular/second-hand') THEN 'Online Circular Store'
+        END AS page_category,
+        Case 
+        when page_path like '%/es/en/%' THEN 'ES(EN)'
+        when page_path like '%/es/es/%' THEN 'ES(ES)'
+        when page_path like '%/no/no/%' THEN 'NO(NO)' END as Marketplace,
+    FROM `ingka-ime-campman-test.wunderman.cutomer_website_visiting` AS es
+
+    WHERE page_path IN (
+        '/es/en/circular/', '/es/en/circular/second-hand/', '/es/en/circular/second-hand', '/es/en/circular/buy-back-quote/', '/es/en/circular/buy-back-quote',
+        '/es/es/circular/', '/es/es/circular/second-hand/', '/es/es/circular/second-hand', '/es/es/circular/buy-back-quote/', '/es/es/circular/buy-back-quote',
+        '/no/no/circular/', '/no/no/circular/second-hand/', '/no/no/circular/second-hand', '/no/no/circular/buy-back-quote/', '/no/no/circular/buy-back-quote')
+    OR es.page_path like '%es/es/buy%'
+    or  es.page_path like '%es/en/buy%'
+    or  es.page_path like '%/no/no/buy%'
+
+);
+
+----------------------------****************************************************************************----------------------------------------------------
+---------------------------------For all 3 months - nove,dec,jan
+-- SELECT 
+    
+--      Marketplace,
+--      page_category,
+--      COUNT(DISTINCT Ikea_Customer_id) AS Unique_Customers,
+--     COUNT(DISTINCT Total_customers) AS Unique_Clients,  -- Count of distinct client_id
+--     COUNT(DISTINCT Total_sesson) AS Total_Sessions,
+
+
+--     COUNT(DISTINCT CASE WHEN page_category = 'Circular Hub' THEN Ikea_Customer_id END) AS Unique_Customers_Circular_Hub,
+--     COUNT(DISTINCT CASE WHEN page_category = 'Buy Back' THEN Ikea_Customer_id END) AS Unique_Customers_Buy_Back,
+--     COUNT(DISTINCT CASE WHEN page_category = 'Buy Back Quote' THEN Ikea_Customer_id END) AS Unique_Customers_Buy_Back_Quote,
+--     COUNT(DISTINCT CASE WHEN page_category = 'Online Circular Store' THEN Ikea_Customer_id END) AS Unique_Customers_Online_Circular_Store,
+
+--     COUNT(DISTINCT CASE WHEN page_category = 'Circular Hub' AND Ikea_Customer_id IN 
+--         (SELECT Ikea_Customer_id FROM `ingka-ime-campman-test.wunderman.table2` WHERE page_category = 'Online Circular Store') 
+--     THEN Ikea_Customer_id END) AS Customers_Circular_Hub_And_Online_Store,
+
+--     COUNT(DISTINCT CASE WHEN page_category = 'Buy Back' AND Ikea_Customer_id IN 
+--         (SELECT Ikea_Customer_id FROM `ingka-ime-campman-test.wunderman.table2` WHERE page_category = 'Buy Back Quote') 
+--     THEN Ikea_Customer_id END) AS Customers_Buy_Back_And_Buy_Back_Quote
+-- FROM `ingka-ime-campman-test.wunderman.table2`
+-- group by 1,2;
+
+
+-----------------------*********************************************************************************************************************----------------------------
+
+----------for december
+
+SELECT 
+    
+     Marketplace,
+     page_category,
+     COUNT(DISTINCT Ikea_Customer_id) AS Unique_Customers,
+    COUNT(DISTINCT Total_customers) AS Unique_Clients,  -- Count of distinct client_id
+    COUNT(DISTINCT Total_sesson) AS Total_Sessions,
+
+
+    COUNT(DISTINCT CASE WHEN page_category = 'Circular Hub' THEN Ikea_Customer_id END) AS Unique_Customers_Circular_Hub, -- CP: Do we need these? isn't the same as row 95?
+    COUNT(DISTINCT CASE WHEN page_category = 'Buy Back' THEN Ikea_Customer_id END) AS Unique_Customers_Buy_Back,
+    COUNT(DISTINCT CASE WHEN page_category = 'Buy Back Quote' THEN Ikea_Customer_id END) AS Unique_Customers_Buy_Back_Quote,
+    COUNT(DISTINCT CASE WHEN page_category = 'Online Circular Store' THEN Ikea_Customer_id END) AS Unique_Customers_Online_Circular_Store,
+
+    COUNT(DISTINCT CASE WHEN page_category = 'Circular Hub' AND Ikea_Customer_id IN 
+        (SELECT Ikea_Customer_id FROM `ingka-ime-campman-test.wunderman.table2` WHERE page_category = 'Online Circular Store') 
+    THEN Ikea_Customer_id END) AS Customers_Circular_Hub_And_Online_Store,
+
+    COUNT(DISTINCT CASE WHEN page_category = 'Buy Back' AND Ikea_Customer_id IN 
+        (SELECT Ikea_Customer_id FROM `ingka-ime-campman-test.wunderman.table2` WHERE page_category = 'Buy Back Quote') 
+    THEN Ikea_Customer_id END) AS Customers_Buy_Back_And_Buy_Back_Quote
+FROM `ingka-ime-campman-test.wunderman.table2`
+
+Where session_startdate between '2024-12-01' AND '2024-12-31'
+group by 1,2;
+
+
+------ QA - CP 
+/*
+SELECT  
+Marketplace,
+COUNT(DISTINCT CASE WHEN page_category = 'Circular Hub' THEN Ikea_Customer_id END) AS Audience1,
+COUNT(DISTINCT CASE WHEN page_category = 'Buy Back' THEN Ikea_Customer_id END) AS Audience2,
+COUNT(DISTINCT CASE WHEN page_category = 'Buy Back Quote' THEN Ikea_Customer_id END) AS Audience3,
+COUNT(DISTINCT CASE WHEN page_category = 'Online Circular Store' THEN Ikea_Customer_id END) AS Audience4,
+COUNT(DISTINCT CASE WHEN page_category = 'Circular Hub' AND Ikea_Customer_id IN (SELECT Ikea_Customer_id FROM `ingka-ime-campman-test.wunderman.table2` WHERE page_category = 'Online Circular Store') THEN Ikea_Customer_id END) AS Audience1and4,
+COUNT(DISTINCT CASE WHEN page_category = 'Circular Hub' OR page_category = 'Online Circular Store' THEN Ikea_Customer_id END) AS Audience1or4,-- CP: Should be the same as (A1 + A4 - (A1_AND_A4)), but for some reason I get 1 record more.
+COUNT(DISTINCT CASE WHEN page_category = 'Buy Back' AND Ikea_Customer_id IN (SELECT Ikea_Customer_id FROM `ingka-ime-campman-test.wunderman.table2` WHERE page_category = 'Buy Back Quote') THEN Ikea_Customer_id END) AS Audience2and3,
+COUNT(DISTINCT CASE WHEN page_category = 'Buy Back' OR page_category = 'Buy Back Quote' THEN Ikea_Customer_id END) AS Audience2or3
+
+FROM `ingka-ime-campman-test.wunderman.table2` 
+
+group by 1
+order by 1
+*/
