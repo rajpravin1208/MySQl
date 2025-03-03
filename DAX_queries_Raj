@@ -1,0 +1,50 @@
+-----Uplift A and B
+
+Uplift Click Rate B vs A PLCS = 
+VAR ClickRate_A = 
+    DIVIDE(
+        CALCULATE(SUM(factInteractions[unique_clicks]), dimPromotion[Test version]="A")
+        ,CALCULATE(SUM(factInteractions[total_delivered]), dimPromotion[Test version]="A")
+    )
+VAR ClickRate_B = 
+    DIVIDE(
+        CALCULATE(SUM(factInteractions[unique_clicks]), dimPromotion[Test version]="B")
+        ,CALCULATE(SUM(factInteractions[total_delivered]), dimPromotion[Test version]="B")
+    ) 
+VAR Uplift = DIVIDE((ClickRate_B - ClickRate_A),ClickRate_A)
+RETURN Uplift
+
+-----------**************************************************************************************************************************************************************
+
+
+
+Click Rate Significant B vs A PLCS = 
+
+VAR Clicks_B = CALCULATE(SUM(factInteractions[unique_clicks]), dimPromotion[Test version] = "B")
+VAR Delivered_B = CALCULATE(SUM(factInteractions[total_delivered]), dimPromotion[Test version] = "B")
+VAR ClickRate_B = DIVIDE(Clicks_B,Delivered_B)
+
+VAR Clicks_A = CALCULATE(SUM(factInteractions[unique_clicks]), dimPromotion[Test version] = "A")
+VAR Delivered_A = CALCULATE(SUM(factInteractions[total_delivered]), dimPromotion[Test version] = "A")
+VAR ClickRate_A = DIVIDE(Clicks_A,Delivered_A)
+
+VAR Clicks_AB = CALCULATE(SUM(factInteractions[unique_clicks]), dimPromotion[Test version] IN {"A", "B"})
+VAR Delivered_AB = CALCULATE(SUM(factInteractions[total_delivered]), dimPromotion[Test version] IN {"A", "B"})
+VAR ClickRate_AB = DIVIDE(Clicks_AB,Delivered_AB)
+
+VAR Z_Numerator = ABS(ClickRate_B - ClickRate_A)
+VAR Z_Denominator = SQRT(ClickRate_AB * (1-ClickRate_AB) * (DIVIDE(1,Delivered_B) + DIVIDE(1,Delivered_A)))
+VAR Z_Score = DIVIDE(Z_Numerator, Z_Denominator)
+
+VAR p_value = NORM.DIST(Z_Score,0,1,TRUE)
+
+VAR Significant = IF(OR(p_value < 0.05, p_value > 0.95), 2, 
+                  IF(OR(p_value < 0.1, p_value > 0.9), 1,0))
+
+VAR Symbol = IF(Significant = 2, "✅", 
+             IF(Significant = 1,  "☑️", "❌"))
+
+Return Symbol
+
+
+-----------**************************************************************************************************************************************************************
